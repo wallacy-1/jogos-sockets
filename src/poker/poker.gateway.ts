@@ -5,17 +5,19 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
   MessageBody,
+  ConnectedSocket,
 } from '@nestjs/websockets';
 import { randomUUID } from 'crypto';
 import { Server, Socket } from 'socket.io';
 
 interface RoomInterface {
   id: string;
+  players: Map<string, PlayerInterface>;
 }
 
 interface PlayerInterface {
   id: string;
-  roomId?: string;
+  name: string;
   choice?: number;
   role?: PlayerRoles;
 }
@@ -26,138 +28,179 @@ enum PlayerRoles {
   COMMON,
 }
 
-@WebSocketGateway({ cors: true })
+@WebSocketGateway({ cors: true, transports: ['websocket'] })
 export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
   private roomMap: Map<string, RoomInterface> = new Map();
-  private playerMap: Map<string, PlayerInterface> = new Map();
 
-  handleConnection(client: Socket) {
+  handleConnection(@ConnectedSocket() client: Socket) {
     console.log(`handleConnection - client.id: ${client.id}`);
-
-    this.playerMap.set(client.id, {
-      id: client.id,
-      roomId: null,
-      choice: null,
-      role: null,
-    });
   }
 
-  handleDisconnect(client: Socket) {
+  handleDisconnect(@ConnectedSocket() client: Socket) {
     console.log(`handleDisconnect - client.id: ${client.id}`);
 
-    const player = this.playerMap.get(client.id);
-    if (!player) return;
+    const room = this.getPlayerRoom(client.id);
+    if (!room) return;
 
-    this.playerMap.delete(player.id);
+    const player = room.players.get(client.id);
+    room.players.delete(client.id);
 
-    if (player.roomId) {
-      if (player.role === PlayerRoles.ADMIN) {
-        this.server.to(player.roomId).emit('adminDisconnected');
-        this.server.in(player.roomId).disconnectSockets();
-      } else {
-        this.server.socketsLeave(player.roomId);
-        this.server.to(player.roomId).emit('playerDisconnected', player.id);
-      }
+    if (player?.role === PlayerRoles.ADMIN) {
+      this.server.to(room.id).emit('adminDisconnected');
+      this.server.in(room.id).disconnectSockets();
+      this.roomMap.delete(room.id);
+    } else {
+      this.server.to(room.id).emit('playerLeft', client.id);
     }
   }
 
   @SubscribeMessage('createRoom')
-  handleCreateRoom(client: Socket) {
+  handleCreateRoom(@ConnectedSocket() client: Socket) {
     const roomId = randomUUID();
-    console.log(`handleCreateRoom - adminId: ${client.id} roomId: ${roomId}`);
+    console.log(`handleCreateRoom - roomId: ${roomId}`);
 
-    this.roomMap.set(roomId, { id: roomId });
-
-    this.playerMap.set(client.id, {
-      id: client.id,
-      roomId,
-      choice: null,
-      role: PlayerRoles.ADMIN,
-    });
-
-    this.server.socketsJoin(roomId);
-    this.server.to(roomId).emit('newRoom', roomId);
+    this.roomMap.set(roomId, { id: roomId, players: new Map() });
+    client.emit('newRoom', roomId);
   }
 
   @SubscribeMessage('joinRoom')
-  handleJoinRoom(@MessageBody() roomId: string, client: Socket) {
+  handleJoinRoom(
+    @MessageBody() data: { roomId: string; playerName: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { roomId, playerName } = data;
     console.log(`handleJoinRoom - client.id: ${client.id} roomId: ${roomId}`);
 
-    if (this.roomMap.has(roomId)) {
+    const room = this.roomMap.get(roomId);
+
+    if (room) {
       console.log(
         `handleJoinRoom - room with id: ${roomId} found, including player: ${client.id}.`,
       );
 
-      this.server.socketsJoin(roomId);
-
-      this.playerMap.set(client.id, {
+      const isFirstPlayer = room.players.size === 0;
+      const newPlayer = {
         id: client.id,
-        roomId,
+        name: playerName ?? 'guest',
         choice: null,
-        role: PlayerRoles.COMMON,
-      });
+        role: isFirstPlayer ? PlayerRoles.ADMIN : PlayerRoles.COMMON,
+      };
 
-      this.server.to(roomId).emit('newPlayer', client.id);
+      room.players.set(client.id, newPlayer);
+
+      client.join(roomId);
+
+      client.emit('playerData', newPlayer);
+
+      const players = [];
+      for (const player of room.players.values()) {
+        players.push({
+          id: player.id,
+          name: player.name,
+          role: player.role,
+          choice: player.choice ? true : false,
+        });
+      }
+
+      this.server.in(roomId).emit('newPlayer', players);
     } else {
-      console.log(`handleJoinRoom - room with id: ${roomId} not found.`);
+      client.emit('error', 'Room not found');
     }
   }
 
   @SubscribeMessage('kickPlayer')
-  handleKickPlayer(@MessageBody() targetId: string, client: Socket) {
-    const admin = this.playerMap.get(client.id);
-    if (admin?.role === PlayerRoles.ADMIN) {
+  handleKickPlayer(
+    @MessageBody() targetId: string,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = this.getPlayerRoom(client.id);
+    if (!room) return;
+
+    const admin = room.players.get(client.id);
+    if (admin?.role === PlayerRoles.ADMIN && admin.id !== targetId) {
       console.log(
         `handleKickPlayer - targetId: ${targetId} player: ${admin.id} playerRole: ${admin.role}`,
       );
 
-      const targetPlayer = this.playerMap.get(targetId);
-      if (targetPlayer?.roomId === admin.roomId) {
-        this.server.socketsLeave(targetPlayer.roomId);
-        this.playerMap.delete(targetId);
+      const targetPlayer = room.players.get(targetId);
+      if (targetPlayer) {
+        room.players.delete(targetId);
 
-        this.server.to(admin.roomId).emit('playerKicked', targetPlayer.id);
-        console.log(`handleKickPlayer - success`);
+        this.server.to(room.id).emit('playerKicked', targetId);
       } else {
-        console.log(`handleKickPlayer - target player not found.`);
+        client.emit('error', 'Player not found');
       }
     } else {
-      console.log(`handleKickPlayer - client is not an admin.`);
+      client.emit('error', 'Not authorized');
     }
   }
 
   @SubscribeMessage('chooseCard')
-  handleChooseCard(@MessageBody() choice: number, client: Socket) {
-    const player = this.playerMap.get(client.id);
-    if (player && player.role !== PlayerRoles.OBSERVER) {
-      player.choice = choice;
+  handleChooseCard(
+    @MessageBody() choice: number,
+    @ConnectedSocket() client: Socket,
+  ) {
+    console.log(`handleChooseCard - client.id: ${client.id}`);
+    const room = this.getPlayerRoom(client.id);
+    if (!room || !choice) return;
 
-      this.server.to(player.roomId).emit('playerHasChoose', player.id);
-    } else {
-      console.log(`handleChooseCard - client is not allowed to choose card.`);
+    const player = room.players.get(client.id);
+    if (player?.role !== PlayerRoles.OBSERVER && player.choice !== choice) {
+      player.choice = choice;
+      this.server.to(room.id).emit('playerSelectedCard', client.id);
     }
   }
 
   @SubscribeMessage('reset')
-  handleResetCards(@MessageBody() roomId: string) {
-    this.playerMap.forEach((player) => {
-      if (player.roomId === roomId) player.choice = null;
-    });
+  handleResetCards(
+    @MessageBody() roomId: string,
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = this.roomMap.get(roomId);
+    if (!room) return;
 
-    this.server.to(roomId).emit('newRound');
+    const player = room.players.get(client.id);
+    if (player?.role === PlayerRoles.ADMIN) {
+      room.players.forEach((player) => {
+        player.choice = null;
+      });
+
+      this.server.to(roomId).emit('newRound');
+    } else {
+      client.emit('error', 'Not authorized');
+    }
   }
 
   @SubscribeMessage('revealCards')
-  handleRevealCards(@MessageBody() roomId: string) {
+  handleRevealCards(
+    @MessageBody() roomId: string,
+    @ConnectedSocket() client: Socket,
+  ) {
     console.log(`handleRevealCards - roomId: ${roomId}`);
+    const room = this.roomMap.get(roomId);
+    console.log(`handleRevealCards - room: ${room}`);
+    if (!room) return;
 
-    const players = Array.from(this.playerMap.values()).filter(
-      (player) => player.roomId === roomId,
-    );
+    const admin = room.players.get(client.id);
 
-    this.server.to(roomId).emit('revealCards', players);
+    if (admin?.role === PlayerRoles.ADMIN) {
+      this.server
+        .to(roomId)
+        .emit('revealCards', Array.from(room.players.values()));
+    } else {
+      client.emit('error', 'Not authorized');
+    }
+  }
+
+  private getPlayerRoom(playerId: string): RoomInterface | undefined {
+    for (const room of this.roomMap.values()) {
+      if (room.players.has(playerId)) {
+        return room;
+      }
+    }
+    return undefined;
   }
 }
