@@ -160,6 +160,33 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  @SubscribeMessage('updateVotingStatus')
+  handleUpdateVotingStatus(
+    @MessageBody() data: { targetId: string; canVote: boolean },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = this.getPlayerRoom(client.id);
+    if (!room) return;
+
+    const admin = room.players.get(client.id);
+    if (admin?.role === PlayerRoles.ADMIN) {
+      const targetPlayer = room.players.get(data.targetId);
+      if (targetPlayer) {
+        targetPlayer.canVote = data.canVote;
+
+        if (room.status !== RoomStatus.REVEAL) {
+          targetPlayer.choice = false;
+        }
+
+        this.roomUpdate(room);
+      } else {
+        client.emit('error', 'Player not found');
+      }
+    } else {
+      client.emit('error', 'Not authorized');
+    }
+  }
+
 
   @SubscribeMessage('chooseCard')
   handleChooseCard(
