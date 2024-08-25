@@ -137,6 +137,30 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
+  @SubscribeMessage('changeName')
+  handleChangeName(
+    @MessageBody() data: { targetId: string; newName: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const room = this.getPlayerRoom(client.id);
+    if (!room) return;
+
+    let player = room.players.get(client.id);
+
+    if (data.targetId !== client.id && player?.role === PlayerRoles.ADMIN) {
+      player = room.players.get(data.targetId);
+    }
+
+    const nameNoWhiteSpace = data.newName.trim();
+
+    if (player && nameNoWhiteSpace) {
+      player.name = nameNoWhiteSpace;
+
+      this.roomUpdate(room);
+    }
+  }
+
+
   @SubscribeMessage('chooseCard')
   handleChooseCard(
     @MessageBody() choice: number,
