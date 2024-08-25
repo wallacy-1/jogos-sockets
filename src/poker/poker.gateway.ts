@@ -24,14 +24,14 @@ interface RoomInterface {
 interface PlayerInterface {
   id: string;
   name: string;
+  canVote: boolean;
   choice: number | boolean;
   role?: PlayerRoles;
 }
 
 enum PlayerRoles {
-  ADMIN,
-  OBSERVER,
-  COMMON,
+  ADMIN = 'ADMIN',
+  COMMON = 'COMMON',
 }
 
 @WebSocketGateway({ cors: true, transports: ['websocket'] })
@@ -95,6 +95,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const newPlayer = {
         id: client.id,
         name: playerName ?? 'guest',
+        canVote: true,
         choice: false,
         role: isFirstPlayer ? PlayerRoles.ADMIN : PlayerRoles.COMMON,
       };
@@ -146,7 +147,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!room || !choice || room.status === RoomStatus.REVEAL) return;
 
     const player = room.players.get(client.id);
-    if (player?.role !== PlayerRoles.OBSERVER && player.choice !== choice) {
+    if (player?.canVote && player.choice !== choice) {
       player.choice = choice;
       this.roomUpdate(room);
     }
