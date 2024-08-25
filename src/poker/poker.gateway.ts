@@ -24,7 +24,7 @@ interface RoomInterface {
 interface PlayerInterface {
   id: string;
   name: string;
-  choice?: number;
+  choice: number | boolean;
   role?: PlayerRoles;
 }
 
@@ -95,7 +95,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const newPlayer = {
         id: client.id,
         name: playerName ?? 'guest',
-        choice: null,
+        choice: false,
         role: isFirstPlayer ? PlayerRoles.ADMIN : PlayerRoles.COMMON,
       };
 
@@ -163,7 +163,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const player = room.players.get(client.id);
     if (player?.role === PlayerRoles.ADMIN) {
       room.players.forEach((player) => {
-        player.choice = null;
+        player.choice = false;
       });
 
       room.status = RoomStatus.VOTING;
