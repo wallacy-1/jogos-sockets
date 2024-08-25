@@ -10,8 +10,14 @@ import {
 import { randomUUID } from 'crypto';
 import { Server, Socket } from 'socket.io';
 
+enum RoomStatus {
+  REVEAL = 'REVEAL',
+  VOTING = 'VOTING',
+}
+
 interface RoomInterface {
   id: string;
+  status: RoomStatus;
   players: Map<string, PlayerInterface>;
 }
 
@@ -62,7 +68,11 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const roomId = randomUUID();
     console.log(`handleCreateRoom - roomId: ${roomId}`);
 
-    this.roomMap.set(roomId, { id: roomId, players: new Map() });
+    this.roomMap.set(roomId, {
+      id: roomId,
+      status: RoomStatus.VOTING,
+      players: new Map(),
+    });
     client.emit('newRoom', roomId);
   }
 
@@ -93,19 +103,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       client.join(roomId);
 
-      client.emit('playerData', newPlayer);
-
-      const players = [];
-      for (const player of room.players.values()) {
-        players.push({
-          id: player.id,
-          name: player.name,
-          role: player.role,
-          choice: player.choice ? true : false,
-        });
-      }
-
-      this.server.in(roomId).emit('newPlayer', players);
+      this.roomUpdate(room);
     } else {
       client.emit('error', 'Room not found');
     }
@@ -145,12 +143,12 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   ) {
     console.log(`handleChooseCard - client.id: ${client.id}`);
     const room = this.getPlayerRoom(client.id);
-    if (!room || !choice) return;
+    if (!room || !choice || room.status === RoomStatus.REVEAL) return;
 
     const player = room.players.get(client.id);
     if (player?.role !== PlayerRoles.OBSERVER && player.choice !== choice) {
       player.choice = choice;
-      this.server.to(room.id).emit('playerSelectedCard', client.id);
+      this.roomUpdate(room);
     }
   }
 
@@ -168,7 +166,8 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
         player.choice = null;
       });
 
-      this.server.to(roomId).emit('newRound');
+      room.status = RoomStatus.VOTING;
+      this.roomUpdate(room);
     } else {
       client.emit('error', 'Not authorized');
     }
@@ -187,9 +186,9 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const admin = room.players.get(client.id);
 
     if (admin?.role === PlayerRoles.ADMIN) {
-      this.server
-        .to(roomId)
-        .emit('revealCards', Array.from(room.players.values()));
+      room.status = RoomStatus.REVEAL;
+
+      this.roomUpdate(room);
     } else {
       client.emit('error', 'Not authorized');
     }
@@ -202,5 +201,23 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
     return undefined;
+  }
+
+  private roomUpdate(room: RoomInterface) {
+    const returnRoom = { ...room, players: [] };
+    for (const player of room.players.values()) {
+      const hideChoice = player.choice ? true : false;
+      const newPlayer = {
+        ...player,
+        choice: room.status === RoomStatus.REVEAL ? player.choice : hideChoice,
+      };
+
+      if (player.role === PlayerRoles.ADMIN) {
+        returnRoom.players.unshift(newPlayer);
+      } else {
+        returnRoom.players.push(newPlayer);
+      }
+    }
+    this.server.in(room.id).emit('roomUpdate', returnRoom);
   }
 }
