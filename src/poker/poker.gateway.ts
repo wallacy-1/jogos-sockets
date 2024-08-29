@@ -25,7 +25,8 @@ interface PlayerInterface {
   id: string;
   name: string;
   canVote: boolean;
-  choice: number | boolean;
+  choice: string | boolean;
+  previousChoiceBeforeAdminChange?: string | boolean;
   role?: PlayerRoles;
 }
 
@@ -211,7 +212,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   @SubscribeMessage('chooseCard')
   handleChooseCard(
-    @MessageBody() choice: number,
+    @MessageBody() choice: string,
     @ConnectedSocket() client: Socket,
   ) {
     console.log(`handleChooseCard - client.id: ${client.id}`);
@@ -222,6 +223,28 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (player?.canVote && player.choice !== choice) {
       player.choice = choice;
       this.roomUpdate(room);
+    }
+  }
+
+  @SubscribeMessage('adminChangePlayerChoice')
+  handleAdminChangePlayerChoice(
+    @MessageBody() data: { targetId: string; choice: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    console.log(`handleAdminChangePlayerChoice - data: ${data}`);
+    const room = this.getPlayerRoom(client.id);
+    if (!room || !data.choice || room.status === RoomStatus.VOTING) return;
+
+    const admin = room.players.get(client.id);
+    if (admin?.role === PlayerRoles.ADMIN) {
+      const targetPlayer = room.players.get(data.targetId);
+
+      if (targetPlayer?.choice !== data.choice) {
+        targetPlayer.previousChoiceBeforeAdminChange = targetPlayer.choice;
+        targetPlayer.choice = data.choice;
+
+        this.roomUpdate(room);
+      }
     }
   }
 
@@ -237,6 +260,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (player?.role === PlayerRoles.ADMIN) {
       room.players.forEach((player) => {
         player.choice = false;
+        player.previousChoiceBeforeAdminChange = false;
       });
 
       room.status = RoomStatus.VOTING;
