@@ -304,16 +304,11 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const returnRoom = { ...room, players: [] };
     for (const player of room.players.values()) {
       const hideChoice = player.choice ? true : false;
-      const newPlayer = {
+
+      returnRoom.players.push({
         ...player,
         choice: room.status === RoomStatus.REVEAL ? player.choice : hideChoice,
-      };
-
-      if (player.role === PlayerRoles.ADMIN) {
-        returnRoom.players.unshift(newPlayer);
-      } else {
-        returnRoom.players.push(newPlayer);
-      }
+      });
     }
     this.server.in(room.id).emit('roomUpdate', returnRoom);
   }
