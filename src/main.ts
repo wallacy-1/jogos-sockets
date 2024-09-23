@@ -9,6 +9,11 @@ async function bootstrap() {
   app.useGlobalPipes(new ValidationPipe());
   app.useGlobalFilters(new JSendExceptionFilter());
 
+  app.enableCors({
+    origin: '*',
+    methods: 'GET',
+  });
+
   await app.listen(env.APP_PORT ?? 3001);
 }
 bootstrap();
