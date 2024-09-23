@@ -53,14 +53,14 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (!room) return;
 
     const player = room.players.get(client.id);
-    room.players.delete(client.id);
 
     if (player?.role === PlayerRoles.ADMIN) {
       this.server.to(room.id).emit('adminDisconnected');
       this.server.in(room.id).disconnectSockets();
       this.roomMap.delete(room.id);
     } else {
-      this.server.to(room.id).emit('playerLeft', client.id);
+      room.players.delete(client.id);
+      this.roomUpdate(room);
     }
   }
 
