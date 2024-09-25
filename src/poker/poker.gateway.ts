@@ -131,6 +131,8 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
         room.players.delete(targetId);
 
         this.server.to(room.id).emit('playerKicked', targetId);
+        this.roomUpdate(room);
+
         this.logger.log(
           `handleKickPlayer - player with name: ${targetPlayer.name} successfully kicked by admin ${admin.name} in room ${room.id}, clientId: ${client.id}`,
         );
