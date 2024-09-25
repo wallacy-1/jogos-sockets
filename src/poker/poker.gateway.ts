@@ -10,31 +10,12 @@ import {
 } from '@nestjs/websockets';
 import { randomUUID } from 'crypto';
 import { Server, Socket } from 'socket.io';
-
-enum RoomStatus {
-  REVEAL = 'REVEAL',
-  VOTING = 'VOTING',
-}
-
-interface RoomInterface {
-  id: string;
-  status: RoomStatus;
-  players: Map<string, PlayerInterface>;
-}
-
-interface PlayerInterface {
-  id: string;
-  name: string;
-  canVote: boolean;
-  choice: string | boolean;
-  previousChoiceBeforeAdminChange?: string | boolean;
-  role?: PlayerRoles;
-}
-
-enum PlayerRoles {
-  ADMIN = 'ADMIN',
-  COMMON = 'COMMON',
-}
+import {
+  RoomInterface,
+  PlayerRoles,
+  RoomStatus,
+  RoomDataFrontInterface,
+} from './interfaces';
 
 @WebSocketGateway({ cors: true, transports: ['websocket'] })
 export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -377,19 +358,66 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   private roomUpdate(room: RoomInterface) {
-    const returnRoom = { ...room, players: [] };
+    const returnRoom: RoomDataFrontInterface = {
+      ...room,
+      players: [],
+    };
+
     for (const player of room.players.values()) {
-      const hideChoice = player.choice ? true : false;
+      const hiddenChoice = player.choice ? true : false;
 
       returnRoom.players.push({
         ...player,
-        choice: room.status === RoomStatus.REVEAL ? player.choice : hideChoice,
+        choice:
+          room.status === RoomStatus.REVEAL ? player.choice : hiddenChoice,
       });
     }
+
+    if (room.status === RoomStatus.REVEAL) {
+      this.calculateRoomStats(returnRoom);
+    }
+
     this.server.in(room.id).emit('roomUpdate', returnRoom);
 
     this.logger.verbose(
       `Function getPlayerRoom - roomId: ${room.id}, status: ${room.status}, players: ${room.players.size}`,
+    );
+  }
+
+  private calculateRoomStats(room: RoomDataFrontInterface) {
+    let sum = 0;
+    let count = 0;
+
+    room.minChoice = null;
+    room.maxChoice = null;
+
+    for (const player of room.players) {
+      const choice = player.choice;
+
+      if (choice && !isNaN(Number(choice))) {
+        const numericChoice = Number(choice);
+
+        room.minChoice =
+          room.minChoice === null
+            ? numericChoice
+            : Math.min(room.minChoice, numericChoice);
+
+        room.maxChoice =
+          room.maxChoice === null
+            ? numericChoice
+            : Math.max(room.maxChoice, numericChoice);
+
+        sum += numericChoice;
+        count++;
+      }
+    }
+
+    if (count > 0) {
+      room.averageChoice = Math.ceil(sum / count);
+    }
+
+    this.logger.verbose(
+      `Function calculateRoomStats - roomId: ${room.id}, (${sum} / ${count}) minChoice: ${room.minChoice}, maxChoice: ${room.maxChoice}, averageChoice: ${room.averageChoice}`,
     );
   }
 }
