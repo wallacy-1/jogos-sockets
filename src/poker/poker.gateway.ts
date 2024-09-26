@@ -24,7 +24,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private roomMap: Map<string, RoomInterface> = new Map();
+  private readonly roomMap: Map<string, RoomInterface> = new Map();
 
   handleConnection(@ConnectedSocket() client: Socket) {
     this.logger.log(`handleConnection - connected client.id: ${client.id}`);
