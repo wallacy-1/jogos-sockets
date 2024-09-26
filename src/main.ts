@@ -5,7 +5,9 @@ import { AppModule } from './app.module';
 import { JSendExceptionFilter } from './common/exceptions';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, {
+    logger: ['log', 'error', 'warn'],
+  });
   app.useGlobalPipes(new ValidationPipe());
   app.useGlobalFilters(new JSendExceptionFilter());
 
