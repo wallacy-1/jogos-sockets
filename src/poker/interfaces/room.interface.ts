@@ -13,6 +13,8 @@ export interface RoomInterface {
 
 export interface RoomDataFrontInterface extends Omit<RoomInterface, 'players'> {
   players: PlayerInterface[];
+  votedPlayersCount: number;
+  votingPlayersCount: number;
   minChoice?: number;
   maxChoice?: number;
   averageChoice?: number;
