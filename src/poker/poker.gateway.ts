@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -8,8 +8,8 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { randomUUID } from 'crypto';
 import { Server, Socket } from 'socket.io';
+import { PokerService } from './poker.service';
 import {
   RoomInterface,
   PlayerRoles,
@@ -24,7 +24,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private readonly roomMap: Map<string, RoomInterface> = new Map();
+  constructor(private readonly pokerService: PokerService) {}
 
   handleConnection(@ConnectedSocket() client: Socket) {
     this.logger.log(`handleConnection - connected client.id: ${client.id}`);
@@ -33,14 +33,14 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleDisconnect(@ConnectedSocket() client: Socket) {
     this.logger.log(`handleDisconnect - client.id: ${client.id}`);
 
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room) return;
 
     const player = room.players.get(client.id);
     room.players.delete(client.id);
 
     if (room.players.size === 0) {
-      this.roomMap.delete(room.id);
+      this.pokerService.deleteRoom(room.id);
       this.logger.log(
         `handleDisconnect - room ${room.id}: size: ${room.players.size} - deleted`,
       );
@@ -51,7 +51,6 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.logger.warn(
         `handleDisconnect - admin disconnected, roomId: ${room.id}, playerName: ${player.name}, client.id: ${client.id}`,
       );
-
       const firstPlayer = room.players.values().next().value;
       firstPlayer.role = PlayerRoles.ADMIN;
     }
@@ -61,21 +60,6 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.debug(
       `handleDisconnect - Remaining players in room ${room.id}: ${room.players.size}`,
     );
-  }
-
-  @SubscribeMessage('createRoom')
-  handleCreateRoom(@ConnectedSocket() client: Socket) {
-    const roomId = randomUUID();
-    this.logger.log(
-      `handleCreateRoom - roomId: ${roomId}, client.id: ${client.id}`,
-    );
-
-    this.roomMap.set(roomId, {
-      id: roomId,
-      status: RoomStatus.VOTING,
-      players: new Map(),
-    });
-    client.emit('newRoom', roomId);
   }
 
   @SubscribeMessage('joinRoom')
@@ -88,12 +72,23 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `handleJoinRoom - playerName: ${playerName}, roomId: ${roomId}, client.id: ${client.id}`,
     );
 
-    const room = this.roomMap.get(roomId);
+    const room = this.pokerService.getRoom(roomId);
 
     if (room) {
       this.logger.debug(
         `handleJoinRoom - room with id: ${roomId} found, including player: ${client.id}.`,
       );
+
+      const duplicateName = this.pokerService.isPlayerNameTaken(
+        room,
+        playerName,
+      );
+
+      if (duplicateName) {
+        throw new BadRequestException(
+          'Name already taken, please choose another.',
+        );
+      }
 
       const isFirstPlayer = room.players.size === 0;
       const newPlayer = {
@@ -105,7 +100,6 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       };
 
       room.players.set(client.id, newPlayer);
-
       client.join(roomId);
 
       this.roomUpdate(room);
@@ -124,7 +118,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `handleKickPlayer - targetId: ${targetId}, client.id: ${client.id}`,
     );
 
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room) return;
 
     const admin = room.players.get(client.id);
@@ -165,7 +159,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleChangeName - targetId: ${data?.targetId}, newName: ${data?.newName}, client.id: ${client.id}`,
     );
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room) return;
 
     let player = room.players.get(client.id);
@@ -177,6 +171,17 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const nameNoWhiteSpace = data.newName.trim();
 
     if (player && nameNoWhiteSpace) {
+      const duplicateName = this.pokerService.isPlayerNameTaken(
+        room,
+        nameNoWhiteSpace,
+      );
+
+      if (duplicateName) {
+        throw new BadRequestException(
+          'Name already taken, please choose another.',
+        );
+      }
+
       player.name = nameNoWhiteSpace;
 
       this.roomUpdate(room);
@@ -194,7 +199,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleUpdateVotingStatus - targetId: ${data?.targetId}, canVote: ${data?.canVote} client.id: ${client.id}`,
     );
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room) return;
 
     const admin = room.players.get(client.id);
@@ -230,7 +235,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleTransferAdmin - targetId: ${targetId} client.id: ${client.id}`,
     );
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room || !targetId) return;
 
     const oldAdmin = room.players.get(client.id);
@@ -256,7 +261,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`handleChooseCard - client.id: ${client.id}`);
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room || !choice || room.status === RoomStatus.REVEAL) return;
 
     const player = room.players.get(client.id);
@@ -278,7 +283,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleAdminChangePlayerChoice - targetId: ${data?.targetId}, choice: ${data.choice}, client.id: ${client.id}`,
     );
-    const room = this.getPlayerRoom(client.id);
+    const room = this.pokerService.getPlayerRoom(client.id);
     if (!room || !data.choice || room.status === RoomStatus.VOTING) return;
 
     const admin = room.players.get(client.id);
@@ -305,7 +310,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleResetCards - roomId: ${roomId} client.id: ${client.id}`,
     );
-    const room = this.roomMap.get(roomId);
+    const room = this.pokerService.getRoom(roomId);
     if (!room) return;
 
     const admin = room.players.get(client.id);
@@ -333,7 +338,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(
       `handleRevealCards - roomId: ${roomId}, client.id: ${client.id}`,
     );
-    const room = this.roomMap.get(roomId);
+    const room = this.pokerService.getRoom(roomId);
     if (!room) return;
 
     const admin = room.players.get(client.id);
@@ -350,22 +355,6 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  private getPlayerRoom(playerId: string): RoomInterface | undefined {
-    this.logger.verbose(`Function getPlayerRoom - playerId: ${playerId}`);
-
-    for (const room of this.roomMap.values()) {
-      if (room.players.has(playerId)) {
-        this.logger.verbose(
-          `getPlayerRoom - room FOUND, roomId: ${room.id}, status: ${room.status}, players: ${room.players.size}`,
-        );
-        return room;
-      }
-    }
-
-    this.logger.verbose(`Function getPlayerRoom - room NOT FOUND`);
-    return undefined;
-  }
-
   private roomUpdate(room: RoomInterface) {
     const returnRoom: RoomDataFrontInterface = {
       ...room,
@@ -377,11 +366,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     for (const player of room.players.values()) {
       const choice =
         room.status === RoomStatus.REVEAL ? player.choice : !!player.choice;
-
-      returnRoom.players.push({
-        ...player,
-        choice,
-      });
+      returnRoom.players.push({ ...player, choice });
 
       if (room.status === RoomStatus.VOTING && player.canVote) {
         if (choice) {
@@ -397,9 +382,8 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     this.server.in(room.id).emit('roomUpdate', returnRoom);
-
     this.logger.verbose(
-      `Function getPlayerRoom - roomId: ${room.id}, status: ${room.status}, players: ${room.players.size}`,
+      `roomUpdate - roomId: ${room.id}, status: ${room.status}, players: ${room.players.size}`,
     );
   }
 
@@ -436,7 +420,7 @@ export class PokerGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
 
     this.logger.verbose(
-      `Function calculateRoomStats - roomId: ${room.id}, (${sum} / ${count}) minChoice: ${room.minChoice}, maxChoice: ${room.maxChoice}, averageChoice: ${room.averageChoice}`,
+      `calculateRoomStats - roomId: ${room.id}, sum: ${sum}, count: ${count}, minChoice: ${room.minChoice}, maxChoice: ${room.maxChoice}, averageChoice: ${room.averageChoice}`,
     );
   }
 }
